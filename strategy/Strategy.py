@@ -189,12 +189,12 @@ class Strategy():
             return target_pos, receiver_unum
         
         elif role == "RECEIVER":
-            # Target for the Receiver is simply their assigned formation position
-            return self.my_desired_position, None
+            # Target for the Receiver is simply their position
+            return self.my_desired_position + np.array([5,0]), None
             
         elif role == "ADVANCE":
             # Target for the Advance player is their assigned formation position
-            return self.my_desired_position, None
+            return self.my_desired_position + np.array([10,0]), None
             
         else: # SUPPORT
             # Target for defenders/support is their assigned formation position

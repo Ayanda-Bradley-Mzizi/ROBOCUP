@@ -211,86 +211,115 @@ class Agent(Base_Agent):
 
 
 
-    def select_skill(self,strategyData):
+    def select_skill(self, strategyData):
         #--------------------------------------- 2. Decide action
         drawer = self.world.draw
-        
-        # 1. Check if the robot is getting up
+        flag_first_time = True
+
+        # 1) Getting up guard
         if self.state == 1 or self.behavior.is_ready("Get_Up"):
             self.state = 0 if self.behavior.execute("Get_Up") else 1
             return
 
-        # 2. Determine Role Assignment and Formation
-        # The existing logic for role assignment and formation readiness is kept.
+        # 2) Role assignment + formation
         current_game_state = strategyData.DetermineGameState()
         formation_positions = GetFormationForSituation(current_game_state)
-        # Assuming role_assignment returns a dictionary where key=unum, value=position
-        point_preferences = role_assignment(strategyData.teammate_positions, formation_positions) 
-        strategyData.my_desired_position = point_preferences.get(strategyData.player_unum, strategyData.mypos)
-        strategyData.my_desired_orientation = strategyData.GetDirectionRelativeToMyPositionAndTarget(strategyData.my_desired_position)
+        point_preferences = role_assignment(strategyData.teammate_positions, formation_positions)
 
-        # If formation is not ready, move to position (unless we are the active player)
-        if not strategyData.IsFormationReady(point_preferences) and strategyData.active_player_unum != strategyData.robot_model.unum:
-            return self.move(strategyData.my_desired_position, orientation=strategyData.my_desired_orientation)
-        
-        # If we are the active player and the formation is not ready, we still move to the ball
-        # but other players must hold position until the ball is passed/shot.
+        strategyData.my_desired_position = point_preferences.get(
+            strategyData.player_unum, strategyData.mypos
+        )
+        strategyData.my_desired_orientation = strategyData.GetDirectionRelativeToMyPositionAndTarget(
+            strategyData.my_desired_position
+        )
 
-        #------------------------------------------------------
-        # STRATEGY EXECUTION (ATTACK vs. DEFEND)
-        #------------------------------------------------------
-        
-        my_unum = strategyData.robot_model.unum
-        
-        # --- A. ATTACKING PHASE (Unums 3, 4, 5) ---
-        if my_unum in strategyData.passing_chain:
-            
-            attack_role = strategyData.GetAttackRole()
-            target_pos, pass_target_unum = strategyData.GetPassTargetAndPosition(attack_role, strategyData.mypos)
-            
-            drawer.annotation((0,10.5), f"ATTACK: Role={attack_role}" , drawer.Color.green, "status")
-            
-            if attack_role == "PASSER":
-                # Check if we should shoot (pass_target_unum == 0)
-                if pass_target_unum == 0:
-                    # Kick to the opponent's goal (15.05, 0)
-                    drawer.clear_all()
-                    return self.kickTarget(strategyData, strategyData.mypos, target_pos)
-                else:
-                    drawer.line(strategyData.mypos, target_pos, 2,drawer.Color.red,"pass line")
-                    return self.kickTarget(strategyData, strategyData.mypos, target_pos)
-
-            elif attack_role == "RECEIVER" or attack_role == "ADVANCE":
-                # Move to the desired position to receive the pass or advance upfield
-                return self.move(strategyData.my_desired_position, orientation=strategyData.ball_dir)
-
-            # This case should not be reached, but as a fallback, move to the desired position
-            return self.move(strategyData.my_desired_position, orientation=strategyData.ball_dir)
-            
-        # --- B. DEFENDING PHASE (Unums 1, 2) ---
-        elif my_unum in strategyData.defending_unums:
-            
-            # If we are the closest to the ball, we are the 'active' defender and should try to steal it.
-            if my_unum == strategyData.active_player_unum:
-                drawer.annotation((0,10.5), "DEFEND: Ball Collector" , drawer.Color.blue, "status")
-                # Go to the ball and kick it away towards the midfield (0, 0)
-                return self.kickTarget(strategyData, strategyData.mypos, (0, 0)) 
+        # If formation not ready and we're NOT in the passing chain, go take your spot.
+        if not strategyData.IsFormationReady(point_preferences) and flag_first_time:
+            flag_first_time = False
+            if strategyData.robot_model.unum in strategyData.passing_chain:
+                pass  # attackers keep playing even if shape isn't perfect
             else:
-                # The robot is a dedicated interceptor/marker (exploitation of the predictable pass)
+                return self.move(
+                    strategyData.my_desired_position,
+                    orientation=strategyData.my_desired_orientation
+                )
+
+        # ------------------------------------------------------
+        # STRATEGY EXECUTION (ATTACK vs. DEFEND)
+        # ------------------------------------------------------
+        my_unum = strategyData.robot_model.unum
+        drawer.clear_all()
+
+        # ===== A) ATTACK (unums in passing_chain: typically 3,4,5) =====
+        if my_unum in strategyData.passing_chain:
+
+            attack_role = strategyData.GetAttackRole()
+            target_pos, pass_target_unum = strategyData.GetPassTargetAndPosition(
+                attack_role, strategyData.mypos
+            )
+            drawer.annotation((0, 10.5), f"ATTACK: Role={attack_role}", drawer.Color.green, "status")
+
+            # World state
+            if hasattr(strategyData.world, "ball_abs_pos"):
+                ball_xy = tuple(strategyData.world.ball_abs_pos[:2])
+            else:
+                ball_xy = tuple(strategyData.ball_abs_pos[:2])
+            my_xy = tuple(strategyData.mypos)
+            goal_x = self._goal_x()  # fixed +X goal = 15.0
+
+            # --- RECEIVER/ADVANCE: sprint to through-ball rendezvous point beyond the ball (+X) ---
+            if attack_role in ("RECEIVER", "ADVANCE"):
+                # Small lateral spread to avoid bunching; slightly wider for ADVANCE
+                if attack_role == "RECEIVER":
+                    lateral = 0.8 if (my_unum % 2 == 0) else -0.8
+                    lead_ahead = 5.0
+                else:  # ADVANCE
+                    lateral = 1.2 if (my_unum % 2 == 0) else -1.2
+                    lead_ahead = 5.0
+
+                lead_pt = self._lead_run_point(ball_xy, my_xy, lead_ahead=lead_ahead, lateral=lateral)
+                drawer.line(my_xy, lead_pt, 2, drawer.Color.cyan, "run_lane")
+                return self.move(lead_pt, orientation=strategyData.ball_dir, is_aggressive=True)
+
+            # --- PASSER: only pass forward (+X); if lane blocked, carry forward first ---
+            if attack_role == "PASSER":
+                # If the suggested target isn't far enough ahead, push it forward
+                fwd_target = self._ensure_forward_target(ball_xy, target_pos, min_ahead=2.0)
+
+                if self._has_forward_lane(strategyData, my_xy, fwd_target, max_opponent_gap=0.8):
+                    drawer.line(my_xy, fwd_target, 2, drawer.Color.red, "pass_line")
+                    return self.kickTarget(strategyData, my_xy, fwd_target)
+                else:
+                    # No clean lane → carry (dribble) forward a bit to open angles
+                    carry = (min(goal_x, ball_xy[0] + 2.5), ball_xy[1])  # always push toward +X
+                    carry = self._clamp_to_field(carry, xlim=15.0, ylim=10.05)
+                    drawer.line(my_xy, carry, 2, drawer.Color.magenta, "carry_forward")
+                    return self.move(carry, orientation=strategyData.ball_dir, is_aggressive=True)
+
+            # Fallback for attackers: gentle forward nudge to avoid stalling
+            nudge = self._clamp_to_field((my_xy[0] + 1.5, my_xy[1]), xlim=15.0, ylim=10.05)
+            return self.move(nudge, orientation=strategyData.ball_dir, is_aggressive=True)
+
+        # ===== B) DEFEND (e.g., unums 1,2) =====
+        elif my_unum in strategyData.defending_unums:
+
+            if my_unum == strategyData.active_player_unum:
+                drawer.annotation((0, 10.5), "DEFEND: Ball Collector", drawer.Color.blue, "status")
+                # Clear to midfield (0,0) fast
+                return self.kickTarget(strategyData, strategyData.mypos, (0, 0))
+            else:
                 target_pos = strategyData.GetDefenseTarget()
-                
-                # U4 is the aggressive interceptor, U5 is the goal area defender (for simplicity here)
                 role_name = "Interceptor" if my_unum == 4 else "Goal Defender"
-                drawer.annotation((0,10.5), f"DEFEND: {role_name}" , drawer.Color.blue, "status")
+                drawer.annotation((0, 10.5), f"DEFEND: {role_name}", drawer.Color.blue, "status")
                 drawer.line(strategyData.mypos, target_pos, 2, drawer.Color.orange, "interception_line")
-                
-                # Move to the calculated interception/marking point
                 return self.move(target_pos, orientation=strategyData.ball_dir, is_aggressive=True)
 
-        # --- C. FALLBACK ---
+        # ===== C) FALLBACK =====
         else:
-             # This should cover unums not in 1-5, or during major play modes (kickoff/goal)
-             return self.move(strategyData.my_desired_position, orientation=strategyData.my_desired_orientation)
+            return self.move(
+                strategyData.my_desired_position,
+                orientation=strategyData.my_desired_orientation
+            )
 
 
 
@@ -303,9 +332,55 @@ class Agent(Base_Agent):
 
 
 
+    # attack helpers
 
+    def _goal_x(self):
+        return 15.0
 
+    def _ensure_forward_target(self, ball_xy, target_xy, min_ahead=2.0):
+        #Ensure the pass target is at least 'min_ahead' meters AHEAD of the ball along +X.
 
+        bx, by = ball_xy
+        tx, ty = target_xy
+        # force forward direction (+X)
+        if (tx - bx) < min_ahead:
+            tx = bx + max(min_ahead, abs(tx - bx))
+        # clamp inside field if needed
+        return self._clamp_to_field((tx, ty), xlim=15.0, ylim=10.05)
+
+    def _lead_run_point(self, ball_xy, my_xy, lead_ahead=5.0, lateral=0.0):
+
+        #Lead run ALWAYS beyond the ball in +X.
+
+        bx, by = ball_xy
+        lead_x = bx + lead_ahead
+        lead_y = by + lateral
+        return self._clamp_to_field((lead_x, lead_y), xlim=15.0, ylim=10.05)
+
+    def _clamp_to_field(self, p, xlim=15.0, ylim=10.05):
+        # Keep point inside pitch rectangle.
+        return (max(-xlim, min(xlim, p[0])), max(-ylim, min(ylim, p[1])))
+
+    def _has_forward_lane(self, strategyData, from_xy, to_xy, max_opponent_gap=0.8):
+   
+        # Same simple lane check as before.
+      
+        try:
+            opps = [o[:2] for o in strategyData.opponent_positions if o is not None]
+        except:
+            opps = []
+        if not opps:
+            return True
+        a = np.array(from_xy); b = np.array(to_xy)
+        ab = b - a
+        ab2 = float(np.dot(ab, ab)) if np.dot(ab, ab) > 1e-6 else 1e-6
+        for o in opps:
+            p = np.array(o)
+            t = float(np.clip(np.dot(p - a, ab) / ab2, 0.0, 1.0))
+            proj = a + t * ab
+            if np.linalg.norm(p - proj) < max_opponent_gap:
+                return False
+        return True
 
 
 
