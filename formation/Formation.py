@@ -54,14 +54,12 @@ def GetAttackingFormation():
 
 def GetFormationForSituation(game_state):
     #chooses formation basd on game state
-    if game_state == "defensive":
+    if game_state == "DEFEND":
         return GetDefensiveFormation()
-    elif game_state == "build_up":
-        return GetBuildUpFormation()
-    elif game_state == "pressing":
-        return GetPressingFormation()
-    elif game_state == "attacking":
+    elif game_state == "ATTACK":
         return GetAttackingFormation()
+    elif game_state == "PRESS":
+        return GetPressingFormation()
     else:
         # default to defensive if cant pick
         return GetDefensiveFormation()

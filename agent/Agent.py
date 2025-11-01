@@ -210,58 +210,87 @@ class Agent(Base_Agent):
 
 
 
+
     def select_skill(self,strategyData):
         #--------------------------------------- 2. Decide action
         drawer = self.world.draw
-        path_draw_options = self.path_manager.draw_options
+        
+        # 1. Check if the robot is getting up
+        if self.state == 1 or self.behavior.is_ready("Get_Up"):
+            self.state = 0 if self.behavior.execute("Get_Up") else 1
+            return
 
-
-        #------------------------------------------------------
-        #Role Assignment
-        if strategyData.active_player_unum == strategyData.robot_model.unum: # I am the active player 
-            drawer.annotation((0,10.5), "Role Assignment Phase" , drawer.Color.yellow, "status")
-        else:
-            drawer.clear("status")
-
-        # i changed the 2 lines below this
+        # 2. Determine Role Assignment and Formation
+        # The existing logic for role assignment and formation readiness is kept.
         current_game_state = strategyData.DetermineGameState()
         formation_positions = GetFormationForSituation(current_game_state)
-        point_preferences = role_assignment(strategyData.teammate_positions, formation_positions)
-        strategyData.my_desired_position = point_preferences[strategyData.player_unum]
-        strategyData.my_desried_orientation = strategyData.GetDirectionRelativeToMyPositionAndTarget(strategyData.my_desired_position)
+        # Assuming role_assignment returns a dictionary where key=unum, value=position
+        point_preferences = role_assignment(strategyData.teammate_positions, formation_positions) 
+        strategyData.my_desired_position = point_preferences.get(strategyData.player_unum, strategyData.mypos)
+        strategyData.my_desired_orientation = strategyData.GetDirectionRelativeToMyPositionAndTarget(strategyData.my_desired_position)
 
-        drawer.line(strategyData.mypos, strategyData.my_desired_position, 2,drawer.Color.blue,"target line")
-
-        if not strategyData.IsFormationReady(point_preferences):
-            return self.move(strategyData.my_desired_position, orientation=strategyData.my_desried_orientation)
-        #else:
-        #     return self.move(strategyData.my_desired_position, orientation=strategyData.ball_dir)
-
-
-    
-        #------------------------------------------------------
-        # Example Behaviour
-        target = (15,0) # Opponents Goal
-
-        if strategyData.active_player_unum == strategyData.robot_model.unum: # I am the active player 
-            drawer.annotation((0,10.5), "Pass Selector Phase" , drawer.Color.yellow, "status")
-        else:
-            drawer.clear_player()
-
-        if strategyData.active_player_unum == strategyData.robot_model.unum: # I am the active player 
-            pass_reciever_unum = strategyData.player_unum + 1 # This starts indexing at 1, therefore player 1 wants to pass to player 2
-            if pass_reciever_unum != 6:
-                target = strategyData.teammate_positions[pass_reciever_unum-1] # This is 0 indexed so we actually need to minus 1 
-            else:
-                target = (15,0) 
-
-            drawer.line(strategyData.mypos, target, 2,drawer.Color.red,"pass line")
-            return self.kickTarget(strategyData,strategyData.mypos,target)
-        else:
-            drawer.clear("pass line")
-            return self.move(strategyData.my_desired_position, orientation=strategyData.ball_dir)
+        # If formation is not ready, move to position (unless we are the active player)
+        if not strategyData.IsFormationReady(point_preferences) and strategyData.active_player_unum != strategyData.robot_model.unum:
+            return self.move(strategyData.my_desired_position, orientation=strategyData.my_desired_orientation)
         
+        # If we are the active player and the formation is not ready, we still move to the ball
+        # but other players must hold position until the ball is passed/shot.
 
+        #------------------------------------------------------
+        # STRATEGY EXECUTION (ATTACK vs. DEFEND)
+        #------------------------------------------------------
+        
+        my_unum = strategyData.robot_model.unum
+        
+        # --- A. ATTACKING PHASE (Unums 3, 4, 5) ---
+        if my_unum in strategyData.passing_chain:
+            
+            attack_role = strategyData.GetAttackRole()
+            target_pos, pass_target_unum = strategyData.GetPassTargetAndPosition(attack_role, strategyData.mypos)
+            
+            drawer.annotation((0,10.5), f"ATTACK: Role={attack_role}" , drawer.Color.green, "status")
+            
+            if attack_role == "PASSER":
+                # Check if we should shoot (pass_target_unum == 0)
+                if pass_target_unum == 0:
+                    # Kick to the opponent's goal (15.05, 0)
+                    drawer.clear_all()
+                    return self.kickTarget(strategyData, strategyData.mypos, target_pos)
+                else:
+                    drawer.line(strategyData.mypos, target_pos, 2,drawer.Color.red,"pass line")
+                    return self.kickTarget(strategyData, strategyData.mypos, target_pos)
+
+            elif attack_role == "RECEIVER" or attack_role == "ADVANCE":
+                # Move to the desired position to receive the pass or advance upfield
+                return self.move(strategyData.my_desired_position, orientation=strategyData.ball_dir)
+
+            # This case should not be reached, but as a fallback, move to the desired position
+            return self.move(strategyData.my_desired_position, orientation=strategyData.ball_dir)
+            
+        # --- B. DEFENDING PHASE (Unums 1, 2) ---
+        elif my_unum in strategyData.defending_unums:
+            
+            # If we are the closest to the ball, we are the 'active' defender and should try to steal it.
+            if my_unum == strategyData.active_player_unum:
+                drawer.annotation((0,10.5), "DEFEND: Ball Collector" , drawer.Color.blue, "status")
+                # Go to the ball and kick it away towards the midfield (0, 0)
+                return self.kickTarget(strategyData, strategyData.mypos, (0, 0)) 
+            else:
+                # The robot is a dedicated interceptor/marker (exploitation of the predictable pass)
+                target_pos = strategyData.GetDefenseTarget()
+                
+                # U4 is the aggressive interceptor, U5 is the goal area defender (for simplicity here)
+                role_name = "Interceptor" if my_unum == 4 else "Goal Defender"
+                drawer.annotation((0,10.5), f"DEFEND: {role_name}" , drawer.Color.blue, "status")
+                drawer.line(strategyData.mypos, target_pos, 2, drawer.Color.orange, "interception_line")
+                
+                # Move to the calculated interception/marking point
+                return self.move(target_pos, orientation=strategyData.ball_dir, is_aggressive=True)
+
+        # --- C. FALLBACK ---
+        else:
+             # This should cover unums not in 1-5, or during major play modes (kickoff/goal)
+             return self.move(strategyData.my_desired_position, orientation=strategyData.my_desired_orientation)
 
 
 
