@@ -8,9 +8,13 @@ from strategy.Assignment import role_assignment
 from strategy.Strategy import Strategy
 
 
-from formation.Formation import GetFormationForSituation  # changed thsi from formation.Formation import GenerateBasicFormation
+from formation.Formation import GetFormationForSituation # changed thsi from formation.Formation import GenerateBasicFormation
 
 
+# --- NEW CONSTANTS FOR LOGIC ---
+# 🔑 ADDED: Stop walking and start kick/dribble behavior when this close to the ball
+BALL_PROXIMITY_BUFFER = 0.8 
+# -----------------------------
 
 class Agent(Base_Agent):
     def __init__(self, host: str, agent_port: int, monitor_port: int, unum: int,
@@ -36,10 +40,42 @@ class Agent(Base_Agent):
 
         self.init_pos = ([-14, 0], [-9, -5], [-9, 0], [-9, 5], [-5, -5], [-5, 0], [-5, 5], [-1, -6], [-1, -2.5], [-1, 2.5], [-1, 6])[unum - 1]  # initial formation
 
-
-    def beam(self, avoid_center_circle=False):
+    
+    # 🔑 ADDED: Opponent Kickoff Initial Positions
+    def _get_opp_kickoff_pos(self, unum):
+        """Returns the specific defensive position for opponent kickoffs."""
+        
+        # 4: Wait at the circle to go get the ball
+        if unum == 5:
+            return (-2.0, 0.0) # just behind center circle
+        
+        # 3, 5: Stand on the halfway line on opposite ends
+        elif unum == 3:
+            return (-0.5, -3.0) # Midfield, up the wing
+        elif unum == 4:
+            return (-0.5, 3.0) # Midfield, down the wing
+            
+        # For all other players, use their standard initial position
+        else:
+            # We must use the original init_pos definition for the other players (1, 2, 6-11)
+            # Find the position that corresponds to this unum
+            init_pos_list = [
+                (-14, 0), (-9, -5), (-9, 0), (-9, 5), (-5, -5), 
+                (-5, 0), (-5, 5), (-1, -6), (-1, -2.5), (-1, 2.5), (-1, 6)
+            ]
+            # unum is 1-indexed, list is 0-indexed
+            return init_pos_list[unum - 1]
+            
+            
+    def beam(self, avoid_center_circle=False, is_opp_kickoff=False):
         r = self.world.robot
-        pos = self.init_pos[:]  # copy position list
+        
+        if is_opp_kickoff:
+            # Use the kickoff position for beaming
+            pos = self._get_opp_kickoff_pos(self.unum)
+        else:
+            pos = self.init_pos[:]  # copy position list
+            
         self.state = 0
 
 
@@ -49,7 +85,8 @@ class Agent(Base_Agent):
 
 
         if np.linalg.norm(pos - r.loc_head_position[:2]) > 0.1 or self.behavior.is_ready("Get_Up"):
-            self.scom.commit_beam(pos, M.vector_angle((-pos[0], -pos[1])))  # beam to initial position, face coordinate (0,0)
+            # Beam to position, face opposite direction
+            self.scom.commit_beam(pos, M.vector_angle((-pos[0], -pos[1])))  
         else:
             if self.fat_proxy_cmd is None:  # normal behavior
                 self.behavior.execute("Zero_Bent_Knees_Auto_Head")
@@ -86,6 +123,7 @@ class Agent(Base_Agent):
         '''
         Walk to ball and kick
         '''
+        # This function is used for Dribble/Carry forward
         return self.behavior.execute("Dribble", None, None)
 
 
@@ -137,6 +175,7 @@ class Agent(Base_Agent):
             return self.fat_proxy_kick()
 
 
+    # DO NOT CHANGE think_and_send
     def think_and_send(self):
 
 
@@ -171,7 +210,7 @@ class Agent(Base_Agent):
             self.scom.commit_and_send(self.fat_proxy_cmd.encode())
             self.fat_proxy_cmd = ""
 
-
+    # KEY CHANGE HERE
     def select_skill(self, strategyData):
         # --------------------------------------- 2. Decide action
         drawer = self.world.draw
@@ -182,7 +221,45 @@ class Agent(Base_Agent):
         if self.state == 1 or self.behavior.is_ready("Get_Up"):
             self.state = 0 if self.behavior.execute("Get_Up") else 1
             return
-
+        
+        # 🔑 NEW KICKOFF LOGIC: Opponent's Kickoff Walk/Wait
+        if strategyData.play_mode == self.world.M_THEIR_KICKOFF:
+            # Assumes Strategy.IsOurKickoff() is available.
+            if not strategyData.IsOurKickoff():
+                target_pos = self._get_opp_kickoff_pos(strategyData.robot_model.unum)
+                target_ori = strategyData.GetDirectionRelativeToMyPositionAndTarget(target_pos)
+                
+                # Player moves to their designated kickoff position
+                # This logic bypasses normal formation movement
+                if np.linalg.norm(np.array(strategyData.mypos) - np.array(target_pos)) > 0.1:
+                    drawer.annotation((0, 10.5), "KICKOFF DEFENSE: Moving to Position", drawer.Color.orange, "status")
+                    return self.move(target_pos, orientation=target_ori)
+                else:
+                    # Once in position, they wait by doing Zero_Bent_Knees_Auto_Head
+                    drawer.annotation((0, 10.5), "KICKOFF DEFENSE: Holding Position", drawer.Color.orange, "status")
+                    return self.behavior.execute("Zero_Bent_Knees_Auto_Head")
+                
+        # B) Opponent's Goal Kick (NEW LOGIC)
+        # Note: 'M_OPP_GOAL_KICK' is the play mode constant for the opponent's goal kick.
+        if strategyData.play_mode == self.world.M_THEIR_GOAL_KICK:
+            my_unum = strategyData.robot_model.unum
+            
+            # --- Unum 5: The High Presser ---
+            if my_unum == 5:
+                # Target: Corner of the opponent's box (high up)
+                target_pos = (13.0, 1.0) 
+                
+                if np.linalg.norm(np.array(strategyData.mypos) - np.array(target_pos)) > 0.1:
+                    drawer.annotation((0, 10.5), "GOAL KICK PRESS: Moving to (13, 1)", drawer.Color.orange, "status")
+                    # Face the center of the field or the goal kick spot for maximum disruption
+                    target_ori = strategyData.GetDirectionRelativeToMyPositionAndTarget((0.0, 0.0))
+                    return self.move(target_pos, orientation=target_ori)
+                else:
+                   return self.move(target_pos, orientation=target_ori)
+                    
+        # ------------------------------------------------------
+        # If not a kickoff (or if it is our kickoff), proceed to normal logic:
+        # ------------------------------------------------------
 
         # 2) Role assignment + formation
         current_game_state = strategyData.DetermineGameState()
@@ -208,14 +285,25 @@ class Agent(Base_Agent):
                     strategyData.my_desired_position,
                     orientation=strategyData.my_desired_orientation
                 )
-
-
         # ------------------------------------------------------
         # STRATEGY EXECUTION (ATTACK vs. DEFEND)
         # ------------------------------------------------------
         my_unum = strategyData.robot_model.unum
         drawer.clear_all()
 
+        # check if we're in a set play
+
+        if current_game_state == "M_OUR_FREE_KICK" or current_game_state == "M_OUR_CORNER_KICK":
+            drawer.annotation((0, 10.5), "SET PLAY: Hold Position", drawer.Color.purple, "status")
+            if (my_xy := strategyData.mypos) is not None and np.linalg.norm(my_xy - strategyData.world.ball_abs_pos[:2]) > 0.7:
+                drawer.line(my_xy, strategyData.world.ball_abs_pos[:2], 2, drawer.Color.purple, "setplay_line")
+                return self.move(
+                    strategyData.world.ball_abs_pos[:2],
+                    orientation=strategyData.my_desired_orientation
+                )
+            else:
+                return self.kickTarget(strategyData, strategyData.mypos, goal_xy := (self._goal_x(), 0))
+            
 
         # ===== A) ATTACK (unums in passing_chain: typically 3,4,5) =====
         if my_unum in strategyData.passing_chain:
@@ -274,42 +362,65 @@ class Agent(Base_Agent):
                     return self.move(strategyData.my_desired_position, orientation=strategyData.ball_dir)
 
 
-            # ========== BALL POSSESSION: SHOOT OR PASS ==========
-            if i_have_ball:
-                # Check if target is a shooting target (pass_target_unum == 0 means shoot)
-                if pass_target_unum == 0:
-                    # SHOOT at target_pos (calculated to avoid keeper)
-                    drawer.line(my_xy, tuple(target_pos), 3, drawer.Color.red, "shoot_line")
-                    drawer.annotation((0, 9), f"SHOOTING! Target: {target_pos}", drawer.Color.orange, "shoot_status")
-                    return self.kickTarget(strategyData, my_xy, tuple(target_pos))
+            # ========== BALL POSSESSION: SHOOT OR PASS / Clumsy Walk Fix Applied Here ==========
+            ball_dist_to_me = np.linalg.norm(np.array(my_xy) - np.array(ball_xy))
+            
+            # 🔑 Check if I'm the closest OR I already have possession
+            if my_unum == closest_attacker_unum or i_have_ball:
                 
-                # Otherwise PASS
-                if attack_role == "PASSER":
-                    # Check if we have a forward passing lane
-                    if self._has_forward_lane(strategyData, my_xy, tuple(target_pos), max_opponent_gap=0.75):
-                        drawer.line(my_xy, tuple(target_pos), 2, drawer.Color.red, "pass_line")
-                        drawer.annotation((0, 9), f"PASSING to {pass_target_unum}", drawer.Color.yellow, "pass_status")
+                # Check for CLUMSY WALK / Kick-or-Dribble activation
+                if ball_dist_to_me < BALL_PROXIMITY_BUFFER:
+                    drawer.annotation((0, 9), "PASSER: 🛑 KICK/DRIBBLE ZONE", drawer.Color.red, "passer_action")
+                    
+                    # 1. SHOOT: pass_target_unum == 0 means shoot
+                    if pass_target_unum == 0:
+                        drawer.line(my_xy, tuple(target_pos), 3, drawer.Color.red, "shoot_line")
+                        drawer.annotation((0, 9), f"SHOOTING! Target: {target_pos}", drawer.Color.orange, "shoot_status")
                         return self.kickTarget(strategyData, my_xy, tuple(target_pos))
+                    
+                    # 2. PASS: check lane clearance
+                    if attack_role == "PASSER":
+                        if self._has_forward_lane(strategyData, my_xy, tuple(target_pos), max_opponent_gap=0.3):
+                            drawer.line(my_xy, tuple(target_pos), 2, drawer.Color.red, "pass_line")
+                            drawer.annotation((0, 9), f"PASSING to {pass_target_unum}", drawer.Color.yellow, "pass_status")
+                            return self.kickTarget(strategyData, my_xy, tuple(target_pos))
+                        else:
+                            # No clear lane: dodge/carry forward (using self.kick() which maps to "Dribble")
+                            carry = self._dodge_forward_target(strategyData, ball_xy, step_forward=1.5, sidestep=1.0)
+                            drawer.line(my_xy, carry, 2, drawer.Color.orange, "carry_dodge")
+                            return self.kickTarget(strategyData, my_xy, carry) 
+                    
+                    # 3. RECEIVER/ADVANCE: move forward with ball (using self.kick() which maps to "Dribble")
                     else:
-                        # No clear lane: dodge/carry forward
-                        carry = self._dodge_forward_target(strategyData, ball_xy, step_forward=1.5, sidestep=1.0)
-                        drawer.line(my_xy, carry, 2, drawer.Color.orange, "carry_dodge")
-                        return self.move(carry, orientation=strategyData.ball_dir, is_aggressive=True)
-                
-                # RECEIVER or ADVANCE with ball: try to advance or shoot
+                        fwd_pt = self._clamp_to_field((my_xy[0] + 1.5, my_xy[1]), xlim=15.0, ylim=10.05)
+                        drawer.line(my_xy, fwd_pt, 2, drawer.Color.green, "advance_with_ball")
+                        return self.kickTarget(strategyData, my_xy, fwd_pt) # Use Dribble command
+
+
+                # Continue walking to ball (or advancing with ball if already controlled)
                 else:
-                    # Move forward with ball
-                    fwd_pt = self._clamp_to_field((my_xy[0] + 1.5, my_xy[1]), xlim=15.0, ylim=10.05)
-                    drawer.line(my_xy, fwd_pt, 2, drawer.Color.green, "advance_with_ball")
-                    return self.move(fwd_pt, orientation=strategyData.ball_dir, is_aggressive=True)
-
-
-            # ========== CHASE BALL (only closest attacker reaches here) ==========
-            y_bias = 0.15 if (my_unum % 2 == 0) else -0.15
-            chase_pt = self._intercept_or_collect_point(strategyData, y_bias=y_bias)
-            drawer.line(my_xy, chase_pt, 2, drawer.Color.yellow, "chase_ball")
-            drawer.annotation((0, 9), f"CHASING (closest: {closest_attacker_unum})", drawer.Color.white, "chase_status")
-            return self.move(chase_pt, orientation=strategyData.ball_dir, is_aggressive=True)
+                    # Chase ball (Closest attacker)
+                    if my_unum == closest_attacker_unum and not i_have_ball:
+                        y_bias = 0.15 if (my_unum % 2 == 0) else -0.15
+                        chase_pt = self._intercept_or_collect_point(strategyData, y_bias=y_bias)
+                        drawer.line(my_xy, chase_pt, 2, drawer.Color.yellow, "chase_ball")
+                        drawer.annotation((0, 9), f"CHASING (closest: {closest_attacker_unum})", drawer.Color.white, "chase_status")
+                        return self.move(chase_pt, orientation=strategyData.ball_dir, is_aggressive=True)
+                    
+                    # Advance with ball (Already have possession, but not close enough for precise kick, so keep walking/dribbling)
+                    elif i_have_ball:
+                        fwd_pt = self._clamp_to_field((my_xy[0] + 1.5, my_xy[1]), xlim=15.0, ylim=10.05)
+                        drawer.line(my_xy, fwd_pt, 2, drawer.Color.green, "advance_with_ball_walk")
+                        return self.move(fwd_pt, orientation=strategyData.ball_dir, is_aggressive=True)
+                        
+            
+            # ========== CHASE BALL (fallback if logic above misses) ==========
+            if my_unum == closest_attacker_unum and not i_have_ball:
+                y_bias = 0.15 if (my_unum % 2 == 0) else -0.15
+                chase_pt = self._intercept_or_collect_point(strategyData, y_bias=y_bias)
+                drawer.line(my_xy, chase_pt, 2, drawer.Color.yellow, "chase_ball_fallback")
+                drawer.annotation((0, 9), f"CHASING (closest: {closest_attacker_unum})", drawer.Color.white, "chase_status")
+                return self.move(chase_pt, orientation=strategyData.ball_dir, is_aggressive=True)
 
 
         # ===== B) DEFEND (e.g., unums 1,2) =====
@@ -444,7 +555,7 @@ class Agent(Base_Agent):
         return (max(-xlim, min(xlim, p[0])), max(-ylim, min(ylim, p[1])))
 
 
-    def _has_forward_lane(self, strategyData, from_xy, to_xy, max_opponent_gap=0.8):
+    def _has_forward_lane(self, strategyData, from_xy, to_xy, max_opponent_gap=0.5):
         # Simple lane check along the pass segment
         try:
             opps = [o[:2] for o in strategyData.opponent_positions if o is not None]
@@ -484,10 +595,10 @@ class Agent(Base_Agent):
     # -------- Ball/possession & chase helpers (use World's predictors) --------
 
 
-    _POSSESSION_RADIUS = 0.35          # meters: close enough to control
+    _POSSESSION_RADIUS = 0.35            # meters: close enough to control
     _POSSESSION_BALL_SPD_MAX = 1.0     # m/s: treat as "controllable" if ball is slower than this
     _PLAYER_CHASE_SPEED = 1.6          # m/s: avg speed to reach the ball (tune to your Walk)
-    _APPROACH_BEHIND = 0.22            # m: stand a bit behind the ball for forward first touch
+    _APPROACH_BEHIND = 0.22             # m: stand a bit behind the ball for forward first touch
 
 
     def _ball_xy(self, strategyData):
@@ -538,7 +649,7 @@ class Agent(Base_Agent):
             if np.linalg.norm(v2) > 1e-3:
                 dir_back = -v2 / np.linalg.norm(v2)  # behind relative to motion
             else:
-                dir_back = np.array([-1.0, 0.0])     # fallback: behind along +X direction
+                dir_back = np.array([-1.0, 0.0])      # fallback: behind along +X direction
             approach = ip + self._APPROACH_BEHIND * dir_back
             approach[1] += y_bias
             return self._clamp_to_field(tuple(approach), xlim=15.0, ylim=10.05)

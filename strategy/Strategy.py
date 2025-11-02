@@ -126,14 +126,41 @@ CHASE_ONLY_PASSER_R  = 4.0              # only the passer chases when ball withi
 
 
 # Lane clearance
-OPP_GAP_CLEAR    = 0.80                 # min gap from opponents along pass line
+OPP_GAP_CLEAR    = 0.30                 # min gap from opponents along pass line
 
 
 # Field clamps
 FIELD_X = 15.0
 FIELD_Y = 10.0
 
-
+def _closest_point_on_segment(A, B, P):
+        """
+        Finds the closest point on the line segment AB to the point P.
+        
+        A, B = endpoints of the segment (np.array)
+        P = point to project (np.array)
+        """
+        A = np.array(A, float); B = np.array(B, float); P = np.array(P, float)
+        
+        AP = P - A
+        AB = B - A
+        
+        # Square magnitude of AB segment
+        mag_sq_AB = np.dot(AB, AB)
+        
+        if mag_sq_AB == 0.0:
+            # A and B are the same point
+            return A
+            
+        # t is the scalar projection of AP onto AB
+        t = np.dot(AP, AB) / mag_sq_AB
+        
+        # Clamp t between 0 and 1 to ensure the projection lies on the segment AB
+        t = np.clip(t, 0.0, 1.0)
+        
+        # The closest point C on the segment AB is A + t * AB
+        C = A + t * AB
+        return C
 
 def _clamp(p):
     return np.array([np.clip(p[0], -FIELD_X, FIELD_X),
@@ -216,8 +243,8 @@ def _calculate_smart_shot_target(shooter_pos, opps):
     
     # Default targets: aim for goal posts with small inward offset (0.3m from post)
     # This keeps shots on target while avoiding center
-    target_left = np.array([15.0, 0.75], float)   # aim inside left post
-    target_right = np.array([15.0, -0.75], float) # aim inside right post
+    target_left = np.array([15.0, 0.3], float)   # aim inside left post
+    target_right = np.array([15.0, -0.3], float) # aim inside right post
     
     # Check if there are opponents near goal (likely goalkeeper)
     keeper_y = None
@@ -365,6 +392,8 @@ class Strategy():
                         is_formation_ready = False
         return is_formation_ready
 
+    def IsOurKickoff(self):
+        return self.play_mode == self.world.M_OUR_KICKOFF 
 
     def GetDirectionRelativeToMyPositionAndTarget(self, target):
         target_vec = target - self.my_head_pos_2d
@@ -483,7 +512,7 @@ class Strategy():
     # -------------------- Attacking targets --------------------
 
 
-    def _away_from_pressure_forward_target(self, passer_pos, raw_target, min_ahead=1.6, sidestep=1.1):
+    def _away_from_pressure_forward_target(self, passer_pos, raw_target, min_ahead=1.6, sidestep=0.5):
         """Ensure target is forward (+X) from passer, and sidestep away from nearest opponent in front."""
         passer_pos = np.array(passer_pos, float)
         tx, ty = float(raw_target[0]), float(raw_target[1])
@@ -503,6 +532,7 @@ class Strategy():
         tx = min(tx, FIELD_X - 0.6)
         return _clamp((tx, ty))
 
+    
 
     def GetPassTargetAndPosition(self, role, passer_pos_2d):
         """
@@ -525,8 +555,8 @@ class Strategy():
             # Calculate smart shooting target (away from keeper, toward corners)
             shoot_target = _calculate_smart_shot_target(passer_pos_2d, self._opps_list)
             
-            # Check if we have a clear lane to shoot
-            if _has_clear_lane(passer_pos_2d, shoot_target, self._opps_list, gap=0.85):
+            # Check if we have a clear lane to shoot (TIGHTER GAP: 0.75 from previous suggestion)
+            if _has_clear_lane(passer_pos_2d, shoot_target, self._opps_list, gap=0.75): 
                 return shoot_target, 0  # 0 indicates shooting, not passing
         
         
@@ -548,7 +578,8 @@ class Strategy():
                 recv_pos = passer_pos_2d + np.array([3.0, 0.0])
 
 
-            fwd_target = self._away_from_pressure_forward_target(passer_pos_2d, recv_pos, min_ahead=1.6, sidestep=1.1)
+            # Use the more central sidestep value (0.5 instead of 1.1)
+            fwd_target = self._away_from_pressure_forward_target(passer_pos_2d, recv_pos, min_ahead=1.6, sidestep=0.5) 
 
 
             if not _has_clear_lane(passer_pos_2d, fwd_target, self._opps_list, gap=OPP_GAP_CLEAR):
@@ -571,13 +602,31 @@ class Strategy():
             lane_y = LANE_LATERALS[lane_index]
             lead = _receiver_lane_point(self.ball_2d, lead_ahead=LEAD_AHEAD_BASE, lane_y=lane_y)
 
-
             # stay out of passer's bubble; repel from passer & other attackers
             repel_points = [self.teammate_positions[u-1] for u in self.passing_chain if u != self.player_unum]
+            
+            # --- START NEW ANTI-BLOCKING LOGIC ---
+            if self.ball_2d[0] > 8.0:
+                P = np.array(lead)
+                A = self.ball_2d
+                
+                # Check repulsion from Ball -> Goal_Corner_Left (15.0, 0.3)
+                B1 = np.array([15.0, 0.3])
+                closest_pt1 = _closest_point_on_segment(A, B1, P)
+                repel_points.append(closest_pt1)
+                
+                # Check repulsion from Ball -> Goal_Corner_Right (15.0, -0.3)
+                B2 = np.array([15.0, -0.3])
+                closest_pt2 = _closest_point_on_segment(A, B2, P)
+                repel_points.append(closest_pt2)
+            # --- END NEW ANTI-BLOCKING LOGIC ---
+            
+            # 👇 MOVED INSIDE BLOCK: Ensures 'lead' is defined before check
             if passer_pos is not None and _dist(lead, passer_pos) < RECEIVER_IGNORE_R:
                 # nudge laterally away from passer
                 sign = -1.0 if (lead[1] >= passer_pos[1]) else 1.0
                 lead[1] += sign * (RECEIVER_IGNORE_R - _dist(lead, passer_pos) + 0.3)
+                
             lead = _repel_from_points(lead, repel_points)
             return lead, None
 
@@ -587,12 +636,27 @@ class Strategy():
             lane_index = self.passing_chain.index(self.player_unum) % len(LANE_LATERALS)
             lane_y = LANE_LATERALS[lane_index] * 1.3
             lead = _receiver_lane_point(self.ball_2d, lead_ahead=LEAD_AHEAD_BASE + 1.0, lane_y=lane_y)
-
-
+            
             repel_points = [self.teammate_positions[u-1] for u in self.passing_chain if u != self.player_unum]
+            
+            # --- START NEW ANTI-BLOCKING LOGIC (Same as Receiver) ---
+            if self.ball_2d[0] > 8.0:
+                P = np.array(lead)
+                A = self.ball_2d
+                B1 = np.array([15.0, 0.3])
+                closest_pt1 = _closest_point_on_segment(A, B1, P)
+                repel_points.append(closest_pt1)
+                
+                B2 = np.array([15.0, -0.3])
+                closest_pt2 = _closest_point_on_segment(A, B2, P)
+                repel_points.append(closest_pt2)
+            # --- END NEW ANTI-BLOCKING LOGIC ---
+            
+            # 👇 MOVED INSIDE BLOCK: Ensures 'lead' is defined before check
             if passer_pos is not None and _dist(lead, passer_pos) < RECEIVER_IGNORE_R:
                 sign = -1.0 if (lead[1] >= passer_pos[1]) else 1.0
                 lead[1] += sign * (RECEIVER_IGNORE_R - _dist(lead, passer_pos) + 0.3)
+                
             lead = _repel_from_points(lead, repel_points)
             return lead, None
 
@@ -600,7 +664,7 @@ class Strategy():
         # SUPPORT/DEFENSE fallback – keep assigned formation
         else:
             return self.my_desired_position, None
-
+        
 
     # ==================== ANTI-BASELINE DEFENSE ====================
     
