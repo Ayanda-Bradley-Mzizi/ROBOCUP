@@ -3,22 +3,28 @@ from math_ops.Math_Ops import Math_Ops as M
 import math
 import numpy as np
 
+
 from strategy.Assignment import role_assignment
 from strategy.Strategy import Strategy
 
+
 from formation.Formation import GetFormationForSituation  # changed thsi from formation.Formation import GenerateBasicFormation
+
 
 
 class Agent(Base_Agent):
     def __init__(self, host: str, agent_port: int, monitor_port: int, unum: int,
                  team_name: str, enable_log, enable_draw, wait_for_server=True, is_fat_proxy=False) -> None:
 
+
         # define robot type
         robot_type = (0, 1, 1, 1, 2, 3, 3, 3, 4, 4, 4)[unum - 1]
+
 
         # Initialize base agent
         # Args: Server IP, Agent Port, Monitor Port, Uniform No., Robot Type, Team Name, Enable Log, Enable Draw, play mode correction, Wait for Server, Hear Callback
         super().__init__(host, agent_port, monitor_port, unum, robot_type, team_name, enable_log, enable_draw, True, wait_for_server, None)
+
 
         self.enable_draw = enable_draw
         self.state = 0  # 0-Normal, 1-Getting up, 2-Kicking
@@ -27,16 +33,20 @@ class Agent(Base_Agent):
         self.fat_proxy_cmd = "" if is_fat_proxy else None
         self.fat_proxy_walk = np.zeros(3)  # filtered walk parameters for fat proxy
 
+
         self.init_pos = ([-14, 0], [-9, -5], [-9, 0], [-9, 5], [-5, -5], [-5, 0], [-5, 5], [-1, -6], [-1, -2.5], [-1, 2.5], [-1, 6])[unum - 1]  # initial formation
+
 
     def beam(self, avoid_center_circle=False):
         r = self.world.robot
         pos = self.init_pos[:]  # copy position list
         self.state = 0
 
+
         # Avoid center circle by moving the player back
         if avoid_center_circle and np.linalg.norm(self.init_pos) < 2.5:
             pos[0] = -2.3
+
 
         if np.linalg.norm(pos - r.loc_head_position[:2]) > 0.1 or self.behavior.is_ready("Get_Up"):
             self.scom.commit_beam(pos, M.vector_angle((-pos[0], -pos[1])))  # beam to initial position, face coordinate (0,0)
@@ -47,6 +57,7 @@ class Agent(Base_Agent):
                 self.fat_proxy_cmd += "(proxy dash 0 0 0)"
                 self.fat_proxy_walk = np.zeros(3)  # reset fat proxy walk
 
+
     def move(self, target_2d=(0, 0), orientation=None, is_orientation_absolute=True,
              avoid_obstacles=True, priority_unums=[], is_aggressive=False, timeout=3000):
         '''
@@ -54,9 +65,11 @@ class Agent(Base_Agent):
         '''
         r = self.world.robot
 
+
         if self.fat_proxy_cmd is not None:  # fat proxy behavior
             self.fat_proxy_move(target_2d, orientation, is_orientation_absolute)  # ignore obstacles
             return
+
 
         if avoid_obstacles:
             target_2d, _, distance_to_final_target = self.path_manager.get_path_to_target(
@@ -64,8 +77,10 @@ class Agent(Base_Agent):
         else:
             distance_to_final_target = np.linalg.norm(target_2d - r.loc_head_position[:2])
 
+
         # Args: target, is_target_abs, ori, is_ori_abs, distance
         self.behavior.execute("Walk", target_2d, True, orientation, is_orientation_absolute, distance_to_final_target)
+
 
     def kick(self, kick_direction=None, kick_distance=None, abort=False, enable_pass_command=False):
         '''
@@ -73,16 +88,20 @@ class Agent(Base_Agent):
         '''
         return self.behavior.execute("Dribble", None, None)
 
+
         if self.min_opponent_ball_dist < 1.45 and enable_pass_command:
             self.scom.commit_pass_command()
 
+
         self.kick_direction = self.kick_direction if kick_direction is None else kick_direction
         self.kick_distance = self.kick_distance if kick_distance is None else kick_distance
+
 
         if self.fat_proxy_cmd is None:  # normal behavior
             return self.behavior.execute("Basic_Kick", self.kick_direction, abort)  # Basic_Kick has no kick distance control
         else:  # fat proxy behavior
             return self.fat_proxy_kick()
+
 
     def kickTarget(self, strategyData, mypos_2d=(0, 0), target_2d=(0, 0), abort=False, enable_pass_command=False):
         '''
@@ -91,31 +110,40 @@ class Agent(Base_Agent):
         # Calculate the vector from the current position to the target position
         vector_to_target = np.array(target_2d) - np.array(mypos_2d)
 
+
         # Calculate the distance (magnitude of the vector)
         kick_distance = np.linalg.norm(vector_to_target)
+
 
         # Calculate the direction (angle) in radians
         direction_radians = np.arctan2(vector_to_target[1], vector_to_target[0])
 
+
         # Convert direction to degrees
         kick_direction = np.degrees(direction_radians)
+
 
         if strategyData.min_opponent_ball_dist < 1.45 and enable_pass_command:
             self.scom.commit_pass_command()
 
+
         self.kick_direction = self.kick_direction if kick_direction is None else kick_direction
         self.kick_distance = self.kick_distance if kick_distance is None else kick_distance
+
 
         if self.fat_proxy_cmd is None:  # normal behavior
             return self.behavior.execute("Basic_Kick", self.kick_direction, abort)  # Basic_Kick has no kick distance control
         else:  # fat proxy behavior
             return self.fat_proxy_kick()
 
+
     def think_and_send(self):
+
 
         behavior = self.behavior
         strategyData = Strategy(self.world)
         d = self.world.draw
+
 
         if strategyData.play_mode == self.world.M_GAME_OVER:
             pass
@@ -131,8 +159,10 @@ class Agent(Base_Agent):
             else:
                 pass
 
+
         # --------------------------------------- 3. Broadcast
         self.radio.broadcast()
+
 
         # --------------------------------------- 4. Send to server
         if self.fat_proxy_cmd is None:  # normal behavior
@@ -141,20 +171,24 @@ class Agent(Base_Agent):
             self.scom.commit_and_send(self.fat_proxy_cmd.encode())
             self.fat_proxy_cmd = ""
 
+
     def select_skill(self, strategyData):
         # --------------------------------------- 2. Decide action
         drawer = self.world.draw
         flag_first_time = True
+
 
         # 1) Getting up guard
         if self.state == 1 or self.behavior.is_ready("Get_Up"):
             self.state = 0 if self.behavior.execute("Get_Up") else 1
             return
 
+
         # 2) Role assignment + formation
         current_game_state = strategyData.DetermineGameState()
         formation_positions = GetFormationForSituation(current_game_state)
         point_preferences = role_assignment(strategyData.teammate_positions, formation_positions)
+
 
         strategyData.my_desired_position = point_preferences.get(
             strategyData.player_unum, strategyData.mypos
@@ -162,6 +196,7 @@ class Agent(Base_Agent):
         strategyData.my_desired_orientation = strategyData.GetDirectionRelativeToMyPositionAndTarget(
             strategyData.my_desired_position
         )
+
 
         # If formation not ready and we're NOT in the passing chain, go take your spot.
         if not strategyData.IsFormationReady(point_preferences) and flag_first_time:
@@ -174,20 +209,24 @@ class Agent(Base_Agent):
                     orientation=strategyData.my_desired_orientation
                 )
 
+
         # ------------------------------------------------------
         # STRATEGY EXECUTION (ATTACK vs. DEFEND)
         # ------------------------------------------------------
         my_unum = strategyData.robot_model.unum
         drawer.clear_all()
 
+
         # ===== A) ATTACK (unums in passing_chain: typically 3,4,5) =====
         if my_unum in strategyData.passing_chain:
+
 
             attack_role = strategyData.GetAttackRole()
             target_pos, pass_target_unum = strategyData.GetPassTargetAndPosition(
                 attack_role, strategyData.mypos
             )
             drawer.annotation((0, 10.5), f"ATTACK: Role={attack_role}", drawer.Color.green, "status")
+
 
             # World state
             if hasattr(strategyData.world, "ball_abs_pos"):
@@ -197,37 +236,85 @@ class Agent(Base_Agent):
             my_xy = tuple(strategyData.mypos)
             goal_x = self._goal_x()  # fixed +X goal = 15.0
 
-            # --- CHASE FIRST: if I don't have the ball, get it (intercept if moving, collect if slow) ---
-            if not self._i_have_ball(strategyData):
-                y_bias = 0.15 if (my_unum % 2 == 0) else -0.15   # avoid stacking on the same spot
-                chase_pt = self._intercept_or_collect_point(strategyData, y_bias=y_bias)
-                drawer.line(my_xy, chase_pt, 2, drawer.Color.yellow, "chase_ball")
-                return self.move(chase_pt, orientation=strategyData.ball_dir, is_aggressive=True)
 
-            # --- RECEIVER / ADVANCE: adaptive, shorter lead runs, away from pressure ---
-            if attack_role in ("RECEIVER", "ADVANCE"):
-                lateral = (0.6 if (my_unum % 2 == 0) else -0.6) if attack_role == "RECEIVER" else (1.0 if (my_unum % 2 == 0) else -1.0)
-                lead_pt = self._lead_run_point(strategyData, ball_xy, my_xy, lead_ahead=3.5, lateral=lateral)
-                drawer.line(my_xy, lead_pt, 2, drawer.Color.cyan, "run_lane")
-                return self.move(lead_pt, orientation=strategyData.ball_dir, is_aggressive=True)
+            # ========== ONLY CLOSEST ATTACKER CHASES BALL ==========
+            # Determine who is closest to ball among attackers
+            closest_attacker_unum = None
+            closest_dist = 1e9
+            for u in strategyData.passing_chain:
+                tpos = strategyData.teammate_positions[u-1]
+                if tpos is None:
+                    continue
+                d = np.linalg.norm(tpos - ball_xy)
+                if d < closest_dist:
+                    closest_dist = d
+                    closest_attacker_unum = u
+            
+            # Check if I have the ball (possession)
+            i_have_ball = self._i_have_ball(strategyData)
+            
+            # If I DON'T have ball AND I'm NOT the closest: move to support position
+            if not i_have_ball and my_unum != closest_attacker_unum:
+                # Move to role-based support position instead of chasing
+                if attack_role == "RECEIVER":
+                    lateral = 0.6 if (my_unum % 2 == 0) else -0.6
+                    lead_pt = self._lead_run_point(strategyData, ball_xy, my_xy, lead_ahead=3.5, lateral=lateral)
+                    drawer.line(my_xy, lead_pt, 2, drawer.Color.cyan, "support_run")
+                    return self.move(lead_pt, orientation=strategyData.ball_dir, is_aggressive=False)
+                
+                elif attack_role == "ADVANCE":
+                    lateral = 1.0 if (my_unum % 2 == 0) else -1.0
+                    lead_pt = self._lead_run_point(strategyData, ball_xy, my_xy, lead_ahead=4.0, lateral=lateral)
+                    drawer.line(my_xy, lead_pt, 2, drawer.Color.cyan, "advance_run")
+                    return self.move(lead_pt, orientation=strategyData.ball_dir, is_aggressive=False)
+                
+                else:  # PASSER role but not closest
+                    # Stay in formation position
+                    drawer.annotation((0, 9), "PASSER: Holding Position", drawer.Color.yellow, "status2")
+                    return self.move(strategyData.my_desired_position, orientation=strategyData.ball_dir)
 
-            # --- PASSER: forward but away from the nearest opponent in front ---
-            if attack_role == "PASSER":
-                fwd_target = self._ensure_forward_target(strategyData, ball_xy, target_pos, min_ahead=1.8, sidestep=1.2, goal_buffer=0.8)
-                if self._has_forward_lane(strategyData, my_xy, fwd_target, max_opponent_gap=0.75):
-                    drawer.line(my_xy, fwd_target, 2, drawer.Color.red, "pass_line")
-                    return self.kickTarget(strategyData, my_xy, fwd_target)
+
+            # ========== BALL POSSESSION: SHOOT OR PASS ==========
+            if i_have_ball:
+                # Check if target is a shooting target (pass_target_unum == 0 means shoot)
+                if pass_target_unum == 0:
+                    # SHOOT at target_pos (calculated to avoid keeper)
+                    drawer.line(my_xy, tuple(target_pos), 3, drawer.Color.red, "shoot_line")
+                    drawer.annotation((0, 9), f"SHOOTING! Target: {target_pos}", drawer.Color.orange, "shoot_status")
+                    return self.kickTarget(strategyData, my_xy, tuple(target_pos))
+                
+                # Otherwise PASS
+                if attack_role == "PASSER":
+                    # Check if we have a forward passing lane
+                    if self._has_forward_lane(strategyData, my_xy, tuple(target_pos), max_opponent_gap=0.75):
+                        drawer.line(my_xy, tuple(target_pos), 2, drawer.Color.red, "pass_line")
+                        drawer.annotation((0, 9), f"PASSING to {pass_target_unum}", drawer.Color.yellow, "pass_status")
+                        return self.kickTarget(strategyData, my_xy, tuple(target_pos))
+                    else:
+                        # No clear lane: dodge/carry forward
+                        carry = self._dodge_forward_target(strategyData, ball_xy, step_forward=1.5, sidestep=1.0)
+                        drawer.line(my_xy, carry, 2, drawer.Color.orange, "carry_dodge")
+                        return self.move(carry, orientation=strategyData.ball_dir, is_aggressive=True)
+                
+                # RECEIVER or ADVANCE with ball: try to advance or shoot
                 else:
-                    carry = self._dodge_forward_target(strategyData, ball_xy, step_forward=1.5, sidestep=1.0)
-                    drawer.line(my_xy, carry, 2, drawer.Color.orange, "carry_dodge")
-                    return self.move(carry, orientation=strategyData.ball_dir, is_aggressive=True)
+                    # Move forward with ball
+                    fwd_pt = self._clamp_to_field((my_xy[0] + 1.5, my_xy[1]), xlim=15.0, ylim=10.05)
+                    drawer.line(my_xy, fwd_pt, 2, drawer.Color.green, "advance_with_ball")
+                    return self.move(fwd_pt, orientation=strategyData.ball_dir, is_aggressive=True)
 
-            # Fallback for attackers: gentle forward nudge to avoid stalling
-            nudge = self._clamp_to_field((my_xy[0] + 1.5, my_xy[1]), xlim=15.0, ylim=10.05)
-            return self.move(nudge, orientation=strategyData.ball_dir, is_aggressive=True)
+
+            # ========== CHASE BALL (only closest attacker reaches here) ==========
+            y_bias = 0.15 if (my_unum % 2 == 0) else -0.15
+            chase_pt = self._intercept_or_collect_point(strategyData, y_bias=y_bias)
+            drawer.line(my_xy, chase_pt, 2, drawer.Color.yellow, "chase_ball")
+            drawer.annotation((0, 9), f"CHASING (closest: {closest_attacker_unum})", drawer.Color.white, "chase_status")
+            return self.move(chase_pt, orientation=strategyData.ball_dir, is_aggressive=True)
+
 
         # ===== B) DEFEND (e.g., unums 1,2) =====
         elif my_unum in strategyData.defending_unums:
+
 
             if my_unum == strategyData.active_player_unum:
                 drawer.annotation((0, 10.5), "DEFEND: Ball Collector", drawer.Color.blue, "status")
@@ -240,6 +327,7 @@ class Agent(Base_Agent):
                 drawer.line(strategyData.mypos, target_pos, 2, drawer.Color.orange, "interception_line")
                 return self.move(target_pos, orientation=strategyData.ball_dir, is_aggressive=True)
 
+
         # ===== C) FALLBACK =====
         else:
             return self.move(
@@ -247,10 +335,13 @@ class Agent(Base_Agent):
                 orientation=strategyData.my_desired_orientation
             )
 
+
     # ---------------------- Attack helpers (fixed +X to goal at x=15.0) ----------------------
+
 
     def _goal_x(self):
         return 15.0
+
 
     def _ensure_forward_target(self, strategyData, ball_xy, target_xy, min_ahead=1.8, sidestep=1.2, goal_buffer=0.8):
         """
@@ -261,9 +352,11 @@ class Agent(Base_Agent):
         bx, by = ball_xy
         tx, ty = target_xy
 
+
         # At least min_ahead forward
         if (tx - bx) < min_ahead:
             tx = bx + min_ahead
+
 
         # If someone is ahead in our lane, sidestep away
         opp, d = self._nearest_opponent_ahead(strategyData, ref_xy=ball_xy, fwd_cone_deg=35, max_dist=5.0)
@@ -272,10 +365,13 @@ class Agent(Base_Agent):
             # pick the side that increases distance to the opponent
             ty = ty + sidestep if (oy - by) < 0 else ty - sidestep
 
+
         # Soft cap near goal line
         tx = min(tx, 15.0 - goal_buffer)
 
+
         return self._clamp_to_field((tx, ty), xlim=15.0, ylim=10.05)
+
 
     def _nearest_opponent_ahead(self, strategyData, ref_xy, fwd_cone_deg=60.0, max_dist=12.0):
         """
@@ -288,6 +384,7 @@ class Agent(Base_Agent):
             opps = []
         if not opps:
             return None, None
+
 
         rx, ry = ref_xy
         best = (None, None)
@@ -305,6 +402,7 @@ class Agent(Base_Agent):
                     best = (o, d)
         return best
 
+
     def _lead_run_point(self, strategyData, ball_xy, my_xy, lead_ahead=3.5, lateral=0.0):
         """
         Adaptive lead point:
@@ -314,13 +412,16 @@ class Agent(Base_Agent):
         """
         bx, by = ball_xy
 
+
         # Look for pressure in front of the ball
         opp, d = self._nearest_opponent_ahead(strategyData, ref_xy=ball_xy, fwd_cone_deg=70, max_dist=10.0)
+
 
         # Base forward amount
         ahead = lead_ahead
 
-        # If there’s an opponent ahead, don’t outrun by too much; leave buffer
+
+        # If there's an opponent ahead, don't outrun by too much; leave buffer
         if d is not None:
             ahead = max(2.0, min(lead_ahead, d - 1.5))  # keep ~1.5m short of the opp wall
             # Lateral push away from opponent
@@ -328,16 +429,20 @@ class Agent(Base_Agent):
             y_dir = -1.0 if (oy - by) > 0 else 1.0
             lateral = max(abs(lateral), 1.0) * y_dir
 
+
         # also avoid overrunning the goal line
         ahead = min(ahead, 15.0 - 0.8 - bx)
+
 
         lead_x = bx + ahead
         lead_y = by + lateral
         return self._clamp_to_field((lead_x, lead_y), xlim=15.0, ylim=10.05)
 
+
     def _clamp_to_field(self, p, xlim=15.0, ylim=10.05):
         # Keep point inside pitch rectangle.
         return (max(-xlim, min(xlim, p[0])), max(-ylim, min(ylim, p[1])))
+
 
     def _has_forward_lane(self, strategyData, from_xy, to_xy, max_opponent_gap=0.8):
         # Simple lane check along the pass segment
@@ -359,6 +464,7 @@ class Agent(Base_Agent):
                 return False
         return True
 
+
     def _dodge_forward_target(self, strategyData, ball_xy, step_forward=1.5, sidestep=1.0):
         """
         Small forward + lateral move to open a lane.
@@ -374,23 +480,28 @@ class Agent(Base_Agent):
         nx = min(15.0 - 0.8, bx + step_forward)
         return self._clamp_to_field((nx, ny), xlim=15.0, ylim=10.05)
 
+
     # -------- Ball/possession & chase helpers (use World's predictors) --------
+
 
     _POSSESSION_RADIUS = 0.35          # meters: close enough to control
     _POSSESSION_BALL_SPD_MAX = 1.0     # m/s: treat as "controllable" if ball is slower than this
     _PLAYER_CHASE_SPEED = 1.6          # m/s: avg speed to reach the ball (tune to your Walk)
     _APPROACH_BEHIND = 0.22            # m: stand a bit behind the ball for forward first touch
 
+
     def _ball_xy(self, strategyData):
         """Get absolute 2D ball position from World."""
         w = strategyData.world
         return tuple(w.ball_abs_pos[:2])
+
 
     def _ball_speed(self, strategyData, hist_steps=3):
         """Current absolute ball speed magnitude (m/s). Uses World.get_ball_abs_vel."""
         w = strategyData.world
         v = w.get_ball_abs_vel(hist_steps)
         return float(np.linalg.norm(v[:2]))
+
 
     def _i_have_ball(self, strategyData):
         """
@@ -404,6 +515,7 @@ class Agent(Base_Agent):
         slow_enough = self._ball_speed(strategyData) <= self._POSSESSION_BALL_SPD_MAX
         return close and slow_enough
 
+
     def _intercept_or_collect_point(self, strategyData, y_bias=0.0):
         """
         If ball is moving fast → intercept at predicted meeting point.
@@ -412,11 +524,13 @@ class Agent(Base_Agent):
         w = strategyData.world
         bx, by = self._ball_xy(strategyData)
 
+
         # Decide: intercept vs static collect
         if self._ball_speed(strategyData) > 0.5 and len(w.ball_2d_pred_pos) > 0:
             # Use World's intersection with average player chase speed
             ip, _dist = w.get_intersection_point_with_ball(self._PLAYER_CHASE_SPEED)
             ip = np.array(ip, dtype=float)
+
 
             # Approach slightly "behind" the ball relative to its velocity if we have it; else behind along +X
             v = w.get_ball_abs_vel(3)
@@ -429,17 +543,21 @@ class Agent(Base_Agent):
             approach[1] += y_bias
             return self._clamp_to_field(tuple(approach), xlim=15.0, ylim=10.05)
 
+
         # Ball slow → simple collect point: a bit behind along +X
         collect = (bx - self._APPROACH_BEHIND, by + y_bias)
         return self._clamp_to_field(collect, xlim=15.0, ylim=10.05)
 
+
     # --------------------------------------- Fat proxy auxiliary methods
+
 
     def fat_proxy_kick(self):
         w = self.world
         r = self.world.robot
         ball_2d = w.ball_abs_pos[:2]
         my_head_pos_2d = r.loc_head_position[:2]
+
 
         if np.linalg.norm(ball_2d - my_head_pos_2d) < 0.25:
             # fat proxy kick arguments: power [0,10]; relative horizontal angle [-180,180]; vertical angle [0,70]
@@ -450,15 +568,19 @@ class Agent(Base_Agent):
             self.fat_proxy_move(ball_2d - (-0.1, 0), None, True)  # ignore obstacles
             return False
 
+
     def fat_proxy_move(self, target_2d, orientation, is_orientation_absolute):
         r = self.world.robot
+
 
         target_dist = np.linalg.norm(target_2d - r.loc_head_position[:2])
         target_dir = M.target_rel_angle(r.loc_head_position[:2], r.imu_torso_orientation, target_2d)
 
+
         if target_dist > 0.1 and abs(target_dir) < 8:
             self.fat_proxy_cmd += (f"(proxy dash {100} {0} {0})")
             return
+
 
         if target_dist < 0.1:
             if is_orientation_absolute:
